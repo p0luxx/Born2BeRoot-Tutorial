@@ -1,407 +1,385 @@
-# Born2beRoot — Tutorial paso a paso
+*This project has been created as part of the 42 curriculum by <tu_login>.*
 
-> Guía práctica para completar el proyecto. Usa Debian como ejemplo (es la opción más común y con más documentación en español/inglés), pero se indican las diferencias con Rocky Linux cuando aplican.
+# 🛡️ Born2BeRoot — Guía Tutorial y Verificación de Requisitos (Debian)
 
----
+¡Bienvenido/a a la guía paso a paso de **Born2BeRoot**! Este repositorio está diseñado para servir como **tutorial genérico, plantilla de entrega y guía de preparación para la defensa** de 42.
 
-## 0. Antes de empezar: entiende qué vas a construir
-
-Born2beRoot te pide levantar una VM Linux "endurecida" (hardened): particionado con LVM, SSH solo por usuario (no root) en el puerto 4242, firewall restrictivo, política de contraseñas estricta, sudo muy limitado y auditado, y un script `monitoring.sh` que informa del estado del sistema cada 10 minutos.
-
-Cosas que **debes poder explicar en la defensa**:
-- Diferencia entre `apt` y `aptitude` (ambos son gestores de paquetes; `apt` es más moderno y pensado para uso interactivo simple, `aptitude` tiene resolución de dependencias más avanzada e interfaz de texto).
-- Qué es **AppArmor** (Debian: control de acceso obligatorio basado en rutas de archivo, perfiles por programa) vs **SELinux** (Rocky: control de acceso obligatorio basado en etiquetas/contextos, más granular y más complejo).
-- Qué es **LVM** (Logical Volume Manager: capa de abstracción que permite redimensionar particiones "en caliente", crear snapshots, etc.).
+Contiene las instrucciones detalladas de configuración de un servidor seguro en **Debian**, la teoría necesaria para la evaluación, las pautas para generar la firma de entrega y un **script automatizado** para verificar que tu máquina cumple el 100% de los requisitos obligatorios del *subject*.
 
 ---
 
-## 1. Instalar el hipervisor y crear la VM
+## 📌 Resumen de Requisitos Obligatorios
 
-1. Instala **VirtualBox** (o **UTM** si usas Mac con Apple Silicon).
-2. Descarga la ISO de **Debian** (netinst) o **Rocky Linux** desde su web oficial.
-3. Crea una nueva VM:
-   - Tipo: Linux, versión: Debian (64-bit) o Red Hat (64-bit).
-   - RAM: 1024 MB suele bastar.
-   - Disco duro: crea un disco virtual **VDI** (o QCOW2 en UTM), tamaño dinámico, ~8-10 GB.
-4. En la configuración de red de la VM, dependiendo del hipervisor, usa NAT o Bridged (necesitas que la VM tenga IP para SSH).
-5. Monta la ISO como unidad óptica e inicia la VM.
-
----
-
-## 2. Instalación del sistema operativo (con particionado manual)
-
-Durante el instalador:
-
-1. Elige idioma, teclado, hostname → **debe ser tu login terminado en 42** (ej. `wil42`).
-2. Crea un usuario **no-root** cuyo username sea tu login. Este usuario luego deberá pertenecer a los grupos `user42` y `sudo`.
-3. Cuando llegues al particionado, elige **"Manual"** (no uses el guiado automático) y configura **LVM cifrado**:
-   - Crea una partición `/boot` **fuera de LVM y sin cifrar** (ej. 500 MB, tipo ext2/ext4). Es obligatoria porque GRUB no siempre puede leer LVM ni particiones cifradas directamente.
-   - Crea una partición física grande (el resto del disco) y márcala como **"physical volume for encryption"** (no "for LVM" todavía).
-   - Configura el **volumen cifrado**: el instalador te preguntará si quieres sobrescribir el disco con datos aleatorios (puedes omitirlo en una VM para ir más rápido) y luego te pedirá una **passphrase**. Esta contraseña te la pedirá la VM **cada vez que arranque**, antes incluso de llegar al login — apúntala, es distinta de la contraseña de tu usuario o de root.
-   - Una vez creado el volumen cifrado (aparecerá como algo tipo `sda5_crypt`), entra en él y **ahora sí** márcalo como **"physical volume for LVM"**.
-   - Sobre ese physical volume (ya cifrado), crea un **volume group** (ej. `vg_data`).
-   - Dentro del VG, crea **logical volumes** (particiones lógicas) separadas, por ejemplo:
-     - `/` (root) — 2-3 GB
-     - `/home` — 1-2 GB
-     - `/var` — 2 GB (importante: aquí van los logs de sudo)
-     - `/var/log` — 1 GB (opcional, separarlo es buena práctica de seguridad)
-     - `swap` — igual o el doble de tu RAM si tienes poca RAM (con 1GB de RAM, un swap de 1-2GB está bien)
-   - No sobre-dimensiones: deja algo de espacio libre en el VG si quieres margen, pero no desperdicies disco.
-
-   > **Importante:** el subject exige *"al menos 2 particiones cifradas usando LVM"*. Con este esquema, todo el volumen físico está cifrado con LUKS **antes** de la capa LVM, así que **todos los logical volumes que crees dentro (`/`, `/home`, `/var`, swap, etc.) quedan cifrados automáticamente** — con eso ya cumples de sobra el mínimo de 2. No necesitas cifrar cada LV por separado.
-   - Verifica después de instalar con `lsblk` que aparece una línea de tipo `crypt` entre la partición física y los `lvm` (ver el ejemplo del PDF: `sda5` → `sda5_crypt` → `vg-root`, `vg-swap`, `vg-home`).
-4. Instala solo lo mínimo: **no instales entorno gráfico**, ni servidor web, ni impresión. Solo "SSH server" y "utilidades estándar del sistema" si el instalador te lo pregunta.
-5. Instala GRUB en el disco (MBR) cuando lo pida.
-6. Termina la instalación y reinicia.
+| Componente | Requisito del Subject | Estado / Configuración |
+| :--- | :--- | :--- |
+| **Sistema Operativo** | Debian (sin interfaz gráfica) | Instalación mínima (netinst) |
+| **Hostname** | `<login>42` | Ejemplo: `gorkgall42` |
+| **Particionado** | LVM sobre Cifrado LUKS | `/boot` fuera de LVM; `/`, `/home`, `/var`, `/var/log` y `swap` dentro |
+| **SSH** | Puerto 4242 único / Sin root | `PermitRootLogin no`, puerto `4242` |
+| **Firewall (UFW)** | Activo al arrancar | Solo el puerto `4242/tcp` permitido |
+| **Sudo** | Política estricta + auditoría | `passwd_tries=3`, `secure_path`, logs en `/var/log/sudo/sudo.log` |
+| **Contraseñas** | PAM `pwquality` + `login.defs` | Expiración 30 días, minlen=10, mayús/minús/dígito, maxrepeat=3 |
+| **Monitoreo** | Script `monitoring.sh` + Cron | Ejecución cada 10 min y `@reboot` emitiendo mediante `wall` |
+| **Seguridad MAC** | AppArmor activo | Habilitado por defecto en Debian |
 
 ---
 
-## 3. Primeros pasos tras instalar
+## 🛠️ Guía Paso a Paso de Configuración
 
-Entra como root o con tu usuario + `su`:
+### 1. Instalación y Particionado LVM + Cifrado LUKS
+1. Descarga la ISO **Debian Netinst** (x86_64).
+2. Durante el asistente de instalación:
+   * **Hostname:** Configura `<login>42` (ej. `student42`).
+   * **Dominio:** Déjalo en blanco.
+   * **Método de particionado:** Selecciona **Guiado - Utilizar todo el disco y configurar LVM cifrado**.
+   * **Estructura de particiones obligatoria:**
+     * `/boot`: Partición ext4 fuera de LVM/cifrado.
+     * En el volumen cifrado `sda5_crypt` (LVM Group):
+       * Volume `/` (root): ~10 GB
+       * Volume `/home`: ~5 GB
+       * Volume `/var`: ~3 GB
+       * Volume `/var/log`: ~2 GB
+       * Volume `swap`: ~1 GB (o acorde a la RAM)
 
-```bash
-apt update && apt upgrade -y
-apt install sudo -y
-```
+### 2. Configuración de Usuarios y Sudo
+1. Crea el grupo `user42` e incluye a tu usuario principal:
+   ```bash
+   sudo groupadd user42
+   sudo usermod -aG user42 <tu_usuario>
+   sudo usermod -aG sudo <tu_usuario>
+   ```
+2. Configura las reglas de `sudo`:
+   Crea el directorio de auditoría y edita `/etc/sudoers` usando `sudo visudo`:
+   ```bash
+   sudo mkdir -p /var/log/sudo
+   sudo visudo
+   ```
+   Añade las siguientes directivas debajo de `Defaults`:
+   ```text
+   Defaults    passwd_tries=3
+   Defaults    badpass_message="Contraseña incorrecta. Inténtalo de nuevo."
+   Defaults    logfile="/var/log/sudo/sudo.log"
+   Defaults    log_input, log_output
+   Defaults    requiretty
+   Defaults    secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+   ```
 
-Verifica que LVM está activo:
-```bash
-lsblk
-sudo lvdisplay
-```
+### 3. Política de Contraseñas (PAM y `login.defs`)
+1. Edita `/etc/login.defs` para establecer la caducidad:
+   ```text
+   PASS_MAX_DAYS   30
+   PASS_MIN_DAYS   2
+   PASS_WARN_AGE   7
+   ```
+2. Instala la librería de calidad de contraseñas de PAM:
+   ```bash
+   sudo apt update && sudo apt install -y libpam-pwquality
+   ```
+3. Edita `/etc/pam.d/common-password` localizando la línea de `pam_pwquality.so` y añadiendo los parámetros requeridos:
+   ```text
+   password    requisite    pam_pwquality.so retry=3 minlen=10 ucredit=-1 lcredit=-1 dcredit=-1 maxrepeat=3 reject_username enforce_for_root
+   ```
 
-Verifica también que el cifrado está activo (debe listarte tu volumen LUKS):
-```bash
-sudo cryptsetup status sda5_crypt   # ajusta el nombre al que te haya puesto el instalador
-sudo blkid | grep crypto_LUKS
-```
-Si esto no devuelve nada, significa que no cifraste el volumen durante la instalación y **tendrás que reinstalar el sistema** (el cifrado LUKS no se puede añadir a una partición LVM ya creada sin perder los datos, así que revisa este punto cuanto antes).
+### 4. Servidor SSH y Cortafuegos UFW
+1. Cambia el puerto en `/etc/ssh/sshd_config`:
+   ```text
+   Port 4242
+   PermitRootLogin no
+   ```
+2. **Nota en Debian 12:** Si el puerto no cambia, desactiva el socket de systemd:
+   ```bash
+   sudo systemctl stop ssh.socket
+   sudo systemctl disable ssh.socket
+   sudo systemctl restart ssh.service
+   ```
+3. Configura UFW:
+   ```bash
+   sudo apt install -y ufw
+   sudo ufw default deny incoming
+   sudo ufw default allow outgoing
+   sudo ufw allow 4242/tcp
+   sudo ufw enable
+   ```
 
----
-
-## 4. Configurar sudo correctamente
-
-Añade tu usuario a los grupos `sudo` y `user42`:
-```bash
-groupadd user42          # si no existe
-usermod -aG sudo,user42 tu_login
-```
-
-Edita la configuración de sudo con `visudo` (nunca edites `/etc/sudoers` a mano con otro editor):
-```bash
-sudo visudo
-```
-
-Añade estas líneas (ajusta al final del archivo, o mejor, crea un archivo dedicado en `/etc/sudoers.d/`):
-
-```
-Defaults        passwd_tries=3
-Defaults        badpass_message="Contraseña incorrecta. Inténtalo de nuevo."
-Defaults        logfile="/var/log/sudo/sudo.log"
-Defaults        log_input,log_output
-Defaults        iolog_dir="/var/log/sudo"
-Defaults        requiretty
-Defaults        secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin"
-```
-
-Crea la carpeta de logs:
-```bash
-sudo mkdir -p /var/log/sudo
-```
-
-Explicación rápida:
-- `passwd_tries=3`: máximo 3 intentos.
-- `badpass_message`: mensaje personalizado si te equivocas.
-- `log_input,log_output` + `iolog_dir`: registra todo lo que escribes y ves al usar sudo (para auditoría).
-- `requiretty`: obliga a que sudo se ejecute desde una TTY real (más seguro).
-- `secure_path`: restringe qué carpetas se usan para buscar comandos ejecutados con sudo (evita ataques de PATH).
-
----
-
-## 5. Configurar SSH (puerto 4242, sin root)
-
-Edita `/etc/ssh/sshd_config`:
-```bash
-sudo nano /etc/ssh/sshd_config
-```
-
-Cambia/asegura estas líneas:
-```
-Port 4242
-PermitRootLogin no
-PasswordAuthentication yes
-```
-
-Reinicia el servicio:
-```bash
-sudo systemctl restart ssh
-sudo systemctl enable ssh
-```
-
-Prueba desde fuera (o desde el host) conectando:
-```bash
-ssh tu_login@IP_DE_LA_VM -p 4242
-```
-
----
-
-## 6. Configurar el firewall
-
-### Debian (UFW)
-```bash
-sudo apt install ufw -y
-sudo ufw allow 4242
-sudo ufw enable
-sudo ufw status
-sudo systemctl enable ufw
-```
-
-### Rocky (firewalld)
-```bash
-sudo dnf install firewalld -y
-sudo systemctl enable --now firewalld
-sudo firewall-cmd --permanent --add-port=4242/tcp
-sudo firewall-cmd --permanent --remove-service=ssh   # quita el puerto 22 por defecto si estaba abierto
-sudo firewall-cmd --reload
-sudo firewall-cmd --list-all
-```
-
-El firewall **debe estar activo al arrancar la VM** — con `enable` ya queda cubierto.
-
-### Nota específica para Rocky: SELinux + puerto 4242
-
-El subject exige que **SELinux esté activo (`enforcing`) al arranque** y que su configuración esté **adaptada a las necesidades del proyecto** — no basta con dejarlo en modo por defecto sin tocarlo si algo choca con tus cambios (por ejemplo, sshd escuchando en un puerto no estándar).
-
-```bash
-sestatus                       # comprueba que "Current mode: enforcing"
-sudo semanage port -l | grep ssh_port_t     # ver puertos permitidos para sshd
-sudo semanage port -a -t ssh_port_t -p tcp 4242   # autoriza el 4242 para el contexto ssh
-sudo systemctl restart sshd
-```
-
-Sin ese `semanage port -a`, SELinux puede bloquear que sshd escuche en el 4242 aunque el firewall lo permita, y el servicio fallará o no arrancará correctamente — es un fallo típico y silencioso en Rocky. El subject aclara que **no hace falta configurar KDump** en Rocky (se te exime explícitamente de ese punto), pero SELinux sí debe quedar activo y coherente con tu configuración.
+### 5. Script de Monitoreo (`monitoring.sh`) y Cron
+1. Crea el script en `/usr/local/bin/monitoring.sh`:
+   ```bash
+   sudo nano /usr/local/bin/monitoring.sh
+   sudo chmod +x /usr/local/bin/monitoring.sh
+   ```
+   *(Asegúrate de que obtenga la arquitectura, CPU física/vCPU, RAM, Disco, Carga CPU, Último reinicio, LVM activo, Conexiones TCP, Usuarios e IP/MAC).*
+2. Programa la ejecución en el `crontab` de `root`:
+   ```bash
+   sudo crontab -e
+   ```
+   Añade las dos líneas al final:
+   ```text
+   */10 * * * * /usr/local/bin/monitoring.sh
+   @reboot sleep 30 && /usr/local/bin/monitoring.sh
+   ```
 
 ---
 
-## 7. Política de contraseñas fuerte
+## 🔍 Script de Verificación Automática de Requisitos (`check_born2beroot.sh`)
 
-Instala las herramientas necesarias:
-```bash
-sudo apt install libpam-pwquality -y
-```
-
-### 7.1 Caducidad de contraseñas — `/etc/login.defs`
-```bash
-sudo nano /etc/login.defs
-```
-Ajusta:
-```
-PASS_MAX_DAYS   30
-PASS_MIN_DAYS   2
-PASS_WARN_AGE   7
-```
-
-Esto solo afecta a usuarios nuevos; para aplicarlo a los existentes (root y tu usuario):
-```bash
-sudo chage -M 30 -m 2 -W 7 root
-sudo chage -M 30 -m 2 -W 7 tu_login
-```
-
-### 7.2 Complejidad — `/etc/pam.d/common-password` (Debian)
-Busca la línea que empieza con `password requisite pam_pwquality.so` y ajústala (o añádela):
-```
-password requisite pam_pwquality.so retry=3 minlen=10 ucredit=-1 lcredit=-1 dcredit=-1 maxrepeat=3 reject_username difok=7 enforce_for_root
-```
-
-Explicación de cada opción:
-- `minlen=10`: mínimo 10 caracteres.
-- `ucredit=-1`: al menos 1 mayúscula.
-- `lcredit=-1`: al menos 1 minúscula.
-- `dcredit=-1`: al menos 1 número.
-- `maxrepeat=3`: no más de 3 caracteres idénticos consecutivos.
-- `reject_username`: la contraseña no puede contener el nombre de usuario.
-- `difok=7`: al menos 7 caracteres deben ser distintos de la contraseña anterior.
-- `enforce_for_root`: hace que PAM también valide la contraseña de root contra esta política (por defecto root está exento).
-
-> **Matiz importante para la defensa:** el subject dice explícitamente que la regla de "al menos 7 caracteres distintos de la anterior" (`difok=7`) **no aplica a la contraseña de root**, pero el resto de reglas (longitud, mayúscula/minúscula/número, `maxrepeat`, `reject_username`) sí. PAM no permite excluir una sola opción solo para root dentro de la misma línea `pam_pwquality.so`, así que en la práctica hay dos enfoques aceptados:
-> 1. **El más simple (y el que usa la mayoría):** dejar `enforce_for_root` con todas las opciones, incluido `difok`, y en el README/defensa explicar que eres consciente de la excepción del subject pero que técnicamente PAM aplica la regla de forma global; si te preguntan, sabes justificarlo.
-> 2. **El más estricto:** quitar `difok=7` de la línea genérica (dejarla en el resto de reglas + `enforce_for_root`) y forzar `difok` solo para usuarios normales mediante una regla condicional en `/etc/pam.d/common-password` (más complejo, no es obligatorio para aprobar).
->
-> Lo importante en la defensa no es cuál elijas, sino que **puedas explicar por qué** el subject hace esa excepción y qué opción tomaste tú.
-
-Después de configurar todo esto, **cambia la contraseña de root y de tu usuario** para que se apliquen realmente las reglas:
-```bash
-sudo passwd root
-sudo passwd tu_login
-```
-
----
-
-## 8. Crear el script `monitoring.sh`
-
-Este script se ejecuta al arranque y cada 10 minutos vía cron, mostrando info del sistema con `wall`.
-
-```bash
-sudo nano /usr/local/bin/monitoring.sh
-```
-
-Contenido (ejemplo funcional, coméntalo y entiéndelo, no lo copies sin más):
+Para comprobar en un solo comando si tu máquina cumple con todo el *subject* antes de la evaluación, guarda y ejecuta este script en tu Debian:
 
 ```bash
 #!/bin/bash
 
-# Arquitectura y kernel
-arch=$(uname -a)
+# ==============================================================================
+# Script de Comprobación de Requisitos - Born2BeRoot (42)
+# Ejecutar en Debian con: sudo bash check_born2beroot.sh
+# ==============================================================================
 
-# CPU físicas
-pcpu=$(grep "physical id" /proc/cpuinfo | sort -u | wc -l)
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
 
-# CPU virtuales
-vcpu=$(grep -c ^processor /proc/cpuinfo)
+echo -e "${BLUE}======================================================"${NC}
+echo -e "${BLUE}    VERIFICADOR DE REQUISITOS BORN2BEROOT (42)      "${NC}
+echo -e "${BLUE}======================================================"${NC}
+echo ""
 
-# Memoria
-mem_total=$(free -m | awk '$1=="Mem:"{print $2}')
-mem_used=$(free -m | awk '$1=="Mem:"{print $3}')
-mem_percent=$(echo "scale=2; $mem_used*100/$mem_total" | bc)
+if [ "$EUID" -ne 0 ]; then
+  echo -e "${RED}[ERROR] Este script debe ejecutarse como root (sudo bash check_born2beroot.sh)${NC}"
+  exit 1
+fi
 
-# Disco
-disk_total=$(df -BG --total 2>/dev/null | grep total | awk '{print $2}' | sed 's/G//')
-disk_used=$(df -BG --total 2>/dev/null | grep total | awk '{print $3}' | sed 's/G//')
-disk_percent=$(df --total 2>/dev/null | grep total | awk '{print $5}')
+# 1. HOSTNAME
+echo -e "${YELLOW}[1/8] Verificando Hostname...${NC}"
+HOSTNAME=$(hostname)
+if [[ "$HOSTNAME" =~ 42$ ]]; then
+  echo -e "  ${GREEN}[OK] Hostname es '$HOSTNAME' (termina en 42)${NC}"
+else
+  echo -e "  ${RED}[ERROR] Hostname es '$HOSTNAME' (NO termina en 42)${NC}"
+fi
+echo ""
 
-# CPU load
-cpu_load=$(top -bn1 | grep "Cpu(s)" | awk '{print $2 + $4}')
+# 2. CIFRADO LUKS Y LVM
+echo -e "${YELLOW}[2/8] Verificando LVM y Cifrado LUKS...${NC}"
+if blkid | grep -q "crypto_LUKS"; then
+  echo -e "  ${GREEN}[OK] Partición cifrada LUKS detectada${NC}"
+else
+  echo -e "  ${RED}[ERROR] No se detectó ninguna partición cifrada LUKS (crypto_LUKS)${NC}"
+fi
 
-# Último boot
-last_boot=$(who -b | awk '{print $3, $4}')
+LVM_COUNT=$(lsblk | grep -c "lvm")
+if [ "$LVM_COUNT" -ge 2 ]; then
+  echo -e "  ${GREEN}[OK] Se detectaron volúmenes LVM ($LVM_COUNT LVs)${NC}"
+else
+  echo -e "  ${RED}[ERROR] Se encontraron menos de 2 volúmenes LVM ($LVM_COUNT encontrados)${NC}"
+fi
 
-# LVM
-lvm_use=$(lsblk 2>/dev/null | grep -c "lvm")
-if [ "$lvm_use" -gt 0 ]; then lvm_use="yes"; else lvm_use="no"; fi
+BOOT_MOUNT=$(lsblk -o MOUNTPOINTS,TYPE | grep "/boot" | grep -v "lvm")
+if [ -n "$BOOT_MOUNT" ]; then
+  echo -e "  ${GREEN}[OK] /boot está montado fuera de LVM${NC}"
+else
+  echo -e "  ${YELLOW}[WARN] Revisa que /boot esté montado fuera de LVM/cifrado${NC}"
+fi
+echo ""
 
-# Conexiones TCP activas
-tcp_con=$(ss -ta | grep ESTAB | wc -l)
+# 3. SSH Y PUERTO 4242
+echo -e "${YELLOW}[3/8] Verificando SSH y Puerto 4242...${NC}"
+if systemctl is-active --quiet ssh || systemctl is-active --quiet sshd; then
+  echo -e "  ${GREEN}[OK] El servicio SSH está activo${NC}"
+else
+  echo -e "  ${RED}[ERROR] El servicio SSH no está activo${NC}"
+fi
 
-# Usuarios conectados
-log_users=$(who | wc -l)
+if ss -tlnp | grep -q ":4242"; then
+  echo -e "  ${GREEN}[OK] SSH está escuchando en el puerto 4242${NC}"
+else
+  echo -e "  ${RED}[ERROR] SSH NO está escuchando en el puerto 4242${NC}"
+fi
 
-# Red
-ip_addr=$(hostname -I | awk '{print $1}')
-mac_addr=$(ip link | grep "link/ether" | awk '{print $2}')
+if grep -Eq "^\s*PermitRootLogin\s+no" /etc/ssh/sshd_config /etc/ssh/sshd_config.d/* 2>/dev/null; then
+  echo -e "  ${GREEN}[OK] PermitRootLogin está configurado en 'no'${NC}"
+else
+  echo -e "  ${RED}[ERROR] PermitRootLogin NO está en 'no' en /etc/ssh/sshd_config${NC}"
+fi
+echo ""
 
-# Sudo
-sudo_cmd=$(journalctl _COMM=sudo 2>/dev/null | grep COMMAND | wc -l)
+# 4. FIREWALL (UFW)
+echo -e "${YELLOW}[4/8] Verificando UFW (Cortafuegos)...${NC}"
+if command -v ufw >/dev/null 2>&1; then
+  if ufw status | grep -q "Status: active"; then
+    echo -e "  ${GREEN}[OK] UFW está activo${NC}"
+  else
+    echo -e "  ${RED}[ERROR] UFW está instalado pero NO está activo${NC}"
+  fi
 
-wall "
-Architecture: $arch
-Physical CPU: $pcpu
-vCPU: $vcpu
-Memory Usage: $mem_used/${mem_total}MB ($mem_percent%)
-Disk Usage: $disk_used/${disk_total}Gb ($disk_percent)
-CPU load: $cpu_load%
-Last boot: $last_boot
-LVM use: $lvm_use
-TCP Connections: $tcp_con ESTABLISHED
-User log: $log_users
-Network: IP $ip_addr ($mac_addr)
-Sudo: $sudo_cmd cmd"
-```
+  if ufw status | grep -q "4242"; then
+    echo -e "  ${GREEN}[OK] El puerto 4242 está permitido en UFW${NC}"
+  else
+    echo -e "  ${RED}[ERROR] El puerto 4242 NO aparece permitido en UFW${NC}"
+  fi
+else
+  echo -e "  ${RED}[ERROR] UFW no está instalado${NC}"
+fi
+echo ""
 
-Dale permisos de ejecución:
-```bash
-sudo chmod +x /usr/local/bin/monitoring.sh
-```
+# 5. POLITICA DE SUDO
+echo -e "${YELLOW}[5/8] Verificando Directivas de Sudo...${NC}"
+SUDO_CONF=$(sudo visudo -c 2>&1)
+if echo "$SUDO_CONF" | grep -q "parsed OK"; then
+  echo -e "  ${GREEN}[OK] Sintaxis de /etc/sudoers es correcta${NC}"
+else
+  echo -e "  ${RED}[ERROR] Error de sintaxis en /etc/sudoers${NC}"
+fi
 
-Pruébalo manualmente:
-```bash
-sudo /usr/local/bin/monitoring.sh
+if [ -d "/var/log/sudo" ]; then
+  echo -e "  ${GREEN}[OK] El directorio /var/log/sudo existe${NC}"
+else
+  echo -e "  ${RED}[ERROR] El directorio /var/log/sudo NO existe${NC}"
+fi
+
+SUDO_FILES="/etc/sudoers /etc/sudoers.d/*"
+check_sudo_def() {
+  local pattern=$1
+  local name=$2
+  if grep -qsE "$pattern" $SUDO_FILES; then
+    echo -e "  ${GREEN}[OK] Directiva '$name' configurada${NC}"
+  else
+    echo -e "  ${YELLOW}[WARN] Directiva '$name' no encontrada explícitamente en sudoers${NC}"
+  fi
+}
+
+check_sudo_def "passwd_tries\s*=\s*3" "passwd_tries=3"
+check_sudo_def "badpass_message" "badpass_message"
+check_sudo_def "logfile\s*=\s*"/var/log/sudo/sudo.log"" "logfile=/var/log/sudo/sudo.log"
+check_sudo_def "log_input" "log_input"
+check_sudo_def "log_output" "log_output"
+check_sudo_def "requiretty" "requiretty"
+check_sudo_def "secure_path" "secure_path"
+echo ""
+
+# 6. POLITICA DE CONTRASEÑAS (PAM Y LOGIN.DEFS)
+echo -e "${YELLOW}[6/8] Verificando Política de Contraseñas...${NC}"
+grep -q "PASS_MAX_DAYS\s*30" /etc/login.defs && echo -e "  ${GREEN}[OK] PASS_MAX_DAYS = 30${NC}" || echo -e "  ${RED}[ERROR] PASS_MAX_DAYS no es 30${NC}"
+grep -q "PASS_MIN_DAYS\s*2" /etc/login.defs && echo -e "  ${GREEN}[OK] PASS_MIN_DAYS = 2${NC}" || echo -e "  ${RED}[ERROR] PASS_MIN_DAYS no es 2${NC}"
+grep -q "PASS_WARN_AGE\s*7" /etc/login.defs && echo -e "  ${GREEN}[OK] PASS_WARN_AGE = 7${NC}" || echo -e "  ${RED}[ERROR] PASS_WARN_AGE no es 7${NC}"
+
+PAM_FILE="/etc/pam.d/common-password"
+if grep -q "pam_pwquality.so" "$PAM_FILE"; then
+  echo -e "  ${GREEN}[OK] Configuración pam_pwquality presente en common-password${NC}"
+else
+  echo -e "  ${RED}[ERROR] No se encontró pam_pwquality en $PAM_FILE${NC}"
+fi
+echo ""
+
+# 7. APPARMOR
+echo -e "${YELLOW}[7/8] Verificando AppArmor...${NC}"
+if command -v aa-status >/dev/null 2>&1 && aa-status --enabled 2>/dev/null; then
+  echo -e "  ${GREEN}[OK] AppArmor está activo y habilitado${NC}"
+else
+  echo -e "  ${RED}[ERROR] AppArmor no está activo o habilitado${NC}"
+fi
+echo ""
+
+# 8. SCRIPT MONITORING.SH Y CRONTAB
+echo -e "${YELLOW}[8/8] Verificando monitoring.sh y Cron...${NC}"
+MON_SCRIPT="/usr/local/bin/monitoring.sh"
+if [ -f "$MON_SCRIPT" ] && [ -x "$MON_SCRIPT" ]; then
+  echo -e "  ${GREEN}[OK] Archivo $MON_SCRIPT existe y es ejecutable (+x)${NC}"
+else
+  echo -e "  ${RED}[ERROR] Falta el archivo $MON_SCRIPT o no tiene permisos de ejecución${NC}"
+fi
+
+if crontab -l 2>/dev/null | grep -q "monitoring.sh"; then
+  echo -e "  ${GREEN}[OK] Regla de cron para monitoring.sh presente en crontab de root${NC}"
+else
+  echo -e "  ${RED}[ERROR] No se encontró la regla en el crontab de root${NC}"
+fi
+
+echo -e "${BLUE}======================================================"${NC}
+echo -e "${BLUE}              FIN DE LA COMPROBACIÓN                  "${NC}
+echo -e "${BLUE}======================================================"${NC}
 ```
 
 ---
 
-## 9. Ejecutar el script cada 10 minutos y al arranque (cron)
+## 📚 Preguntas Teóricas Esenciales para la Defensa
 
-Edita el crontab de root:
-```bash
-sudo crontab -e
-```
+Durante la corrección entre pares (*peer-evaluation*), el evaluador te formulará preguntas conceptuales. Aquí tienes el resumen defensivo clave:
 
-Añade:
-```
-*/10 * * * * /usr/local/bin/monitoring.sh
-@reboot sleep 30 && /usr/local/bin/monitoring.sh
-```
+1. **Debian vs. Rocky Linux:**
+   * **Debian:** Distribución basada en la comunidad que usa paquetes `.deb` (`apt`). Es ligera, extremadamente estable y utiliza **AppArmor** como sistema de seguridad por defecto.
+   * **Rocky Linux:** Distribución orientada a entornos empresariales basada en RHEL. Usa paquetes `.rpm` (`dnf`/`yum`) y utiliza **SELinux** por defecto.
 
-(el `sleep 30` en el reboot da tiempo a que el sistema arranque completamente antes de que `wall` intente escribir en las terminales).
+2. **AppArmor vs. SELinux:**
+   * **AppArmor:** Control de acceso obligatorio (MAC) que asocia los perfiles de seguridad directamente a las **rutas de los archivos ejecutable**. Es más sencillo de administrar.
+   * **SELinux:** Sistema MAC que asigna **etiquetas y contextos de seguridad** a cada proceso, usuario y archivo (inodes). Permite un control extremadamente fino pero con mayor complejidad.
 
-Para interrumpir el script en marcha sin modificarlo (te lo pedirán en la defensa): puedes usar `Ctrl+C` si lo lanzas en foreground, o `pkill -f monitoring.sh` / matar el PID con `kill` si corre en background.
+3. **UFW vs. firewalld:**
+   * **UFW (Uncomplicated Firewall):** Interfaz simplificada sobre `iptables`/`nftables` predeterminada en Debian.
+   * **firewalld:** Demonio de gestión dinámica del cortafuegos por zonas habitual en distribuciones RHEL/Rocky Linux.
 
----
+4. **VirtualBox vs. UTM:**
+   * **VirtualBox:** Hipervisor de tipo 2 multiplataforma para arquitecturas x86/x64 (Intel/AMD).
+   * **UTM:** Hipervisor optimizado para macOS que aprovecha el motor de virtualización nativo de Apple Silicon (M1/M2/M3) mediante QEMU.
 
-## 10. Comprobaciones antes de la defensa
+5. **`apt` vs. `aptitude`:**
+   * **`apt`:** Herramienta estándar de línea de comandos para la gestión básica e interactiva de paquetes.
+   * **`aptitude`:** Gestor avanzado que incluye interfaz de texto (ncurses) y un algoritmo superior para resolver conflictos complejos de dependencias.
 
-Checklist rápido:
-- [ ] `hostname` termina en 42.
-- [ ] `ssh usuario@ip -p 4242` funciona; `ssh root@ip -p 4242` **falla**.
-- [ ] `sudo ufw status` (o `firewall-cmd --list-all`) muestra solo el 4242 abierto.
-- [ ] `sudo -l` muestra tus restricciones de sudo aplicadas.
-- [ ] `chage -l tu_login` muestra la política de caducidad correcta.
-- [ ] Intentar poner una contraseña débil falla (prueba con `passwd`).
-- [ ] `/var/log/sudo/` contiene logs tras usar sudo.
-- [ ] `monitoring.sh` se ejecuta correctamente y sin errores.
-- [ ] `lsblk` / `sudo vgs` / `sudo lvs` muestran tu esquema de LVM.
-- [ ] `sudo cryptsetup status <nombre>` confirma que el volumen está cifrado (LUKS activo).
-- [ ] **No hay ningún snapshot** en la VM antes de empezar la evaluación (el subject lo prohíbe explícitamente; solo se crea uno dedicado a la defensa y se borra al terminar).
-- [ ] La passphrase de cifrado del disco la tienes apuntada y la recuerdas — se pide al arrancar la VM, antes del login.
-
-### Cosas que te van a pedir literalmente durante la evaluación (no solo comprobar)
-
-Estas no son solo checks tuyos, son acciones que el evaluador puede pedirte hacer en directo:
-- **Cambiar el hostname** de la VM (debe seguir terminando en 42).
-- **Crear un usuario nuevo** y asignarlo a un grupo, para probar que entiendes la gestión de usuarios/SSH.
-- **Interrumpir `monitoring.sh` sin modificar el script** (piensa en `crontab -e` para comentar/quitar temporalmente la línea, o matar el proceso si está corriendo en ese momento — no vale editar el `.sh`).
-- Explicar **diferencias conceptuales**: `apt` vs `aptitude`, AppArmor vs SELinux, UFW vs firewalld, y (si aplica) VirtualBox vs UTM.
-- Posiblemente una **pequeña modificación en vivo** del proyecto (una línea de script, un campo nuevo en el monitoring, etc.) — se especifica en la guía de evaluación de tu turno, no siempre aplica.
+6. **LVM y Cifrado LUKS:**
+   * **LVM (Logical Volume Manager):** Capa de abstracción entre los discos físicos y los sistemas de archivos. Permite crear y redimensionar volúmenes lógicos dinámicamente sin desmontar el sistema.
+   * **LUKS (Linux Unified Key Setup):** Estándar de cifrado de bloque en Linux. Cifra la partición física (`sda5_crypt`) sobre la que se asienta el grupo de volúmenes LVM.
 
 ---
 
-## 11. README.md y signature.txt
+## 🛠️ Comandos Prácticos para la Evaluación en Vivo
 
-En la raíz del repo Git:
+El evaluador te pedirá realizar demostraciones en la consola de tu Debian:
 
-**README.md** debe incluir, como mínimo:
-1. Primera línea en cursiva: `*This project has been created as part of the 42 curriculum by <login>.*`
-2. Sección **Description**: qué es el proyecto y su objetivo.
-3. Sección **Instructions**: cómo instalar/ejecutar.
-4. Sección **Resources**: enlaces de referencia + explicación de cómo usaste IA (para qué tareas concretas).
-5. Sección de elección de SO: por qué Debian o Rocky, ventajas/desventajas, y comparativas:
-   - Debian vs Rocky Linux
-   - AppArmor vs SELinux
-   - UFW vs firewalld
-   - VirtualBox vs UTM
-
-**signature.txt**: apaga la VM (o snapshot solo para evaluación) y calcula el hash SHA1 del disco virtual:
-```bash
-# Linux
-sha1sum tu_vm.vdi
-# Windows
-certUtil -hashfile tu_vm.vdi sha1
-# macOS
-shasum tu_vm.vdi
-```
-Copia el resultado en `signature.txt`. **Nunca subas la VM al repo**, solo el hash.
+* **Cambiar el Hostname:**
+  ```bash
+  sudo hostnamectl set-hostname nuevo_nombre42
+  # Restaurar:
+  sudo hostnamectl set-hostname <tu_login>42
+  ```
+* **Crear un Usuario y asignarlo al grupo `user42`:**
+  ```bash
+  sudo adduser nuevo_usuario
+  sudo usermod -aG user42 nuevo_usuario
+  groups nuevo_usuario
+  ```
+* **Detener / Pausar `monitoring.sh` sin modificar el script:**
+  ```bash
+  # Opción 1: Comentar la línea en crontab
+  sudo crontab -e
+  # Opción 2: Matar el proceso en ejecución
+  pkill -f monitoring.sh
+  ```
+* **Verificar el particionado LVM cifrado:**
+  ```bash
+  lsblk
+  sudo vgs
+  sudo lvs
+  sudo cryptsetup status sda5_crypt
+  ```
+* **Consultar el registro de auditoría de Sudo:**
+  ```bash
+  sudo cat /var/log/sudo/sudo.log
+  ```
 
 ---
 
-## 12. Bonus (solo si el mandatory está perfecto)
+## 📦 Instrucciones de Entrega y Firma SHA1 (`signature.txt`)
 
-- Particionado más granular (más logical volumes).
-- WordPress funcional con **lighttpd + MariaDB + PHP** (nginx/apache2 prohibidos).
-- Un servicio adicional a tu elección (justificable en la defensa).
-- Si abres más puertos para los servicios bonus, actualiza UFW/firewalld en consecuencia.
+1. **Apaga la VM por completo:** `sudo shutdown now`.
+2. **Genera la firma SHA1** en la terminal de tu ordenador anfitrión (Host):
+   * En Mac / Linux:
+     ```bash
+     shasum tu_maquina.vdi > signature.txt
+     ```
+3. **Sube únicamente los archivos de documentación:**
+   * `signature.txt`
+   * `README.md`
+   *(🛑 Nunca subas el archivo `.vdi` al repositorio de Git)*.
 
 ---
-
-### Resumen mental para la defensa
-Tienes que poder explicar **por qué** hiciste cada cosa, no solo copiar comandos: por qué LVM, por qué separar `/var`, qué hace cada línea de `sudoers`, cómo interrumpirías el cron sin tocar el script, y las diferencias conceptuales entre las herramientas comparadas en el README.
+*Created as part of the 42 Born2BeRoot curriculum.*
